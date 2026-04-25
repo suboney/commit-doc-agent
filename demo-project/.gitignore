@@ -1,0 +1,7 @@
+node_modules/
+dist/
+package-lock.json
+.env
+docs/.reports/
+.run-store/
+.DS_Store

@@ -1,0 +1,8 @@
+dist/**/*.test.js
+src/
+demo-project/
+examples/
+reports/
+.run-store/
+.github/
+.vscode/

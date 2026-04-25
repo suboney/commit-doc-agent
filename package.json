@@ -1,0 +1,46 @@
+{
+  "name": "@suboney/commit-doc-agent",
+  "version": "0.1.0",
+  "description": "Local-first CLI that turns git commits into editable feature documentation.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "commit-doc-agent": "dist/cli/index.js"
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    "LICENSE",
+    "README.md",
+    "docs/PROJECT_OVERVIEW.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "cli": "npm run build && node dist/cli/index.js",
+    "commit-doc-agent:setup": "npm run build && node scripts/commit-doc-agent-setup.mjs",
+    "commit-doc-agent:generate": "npm run build && node scripts/commit-doc-agent-generate.mjs",
+    "demo:setup": "npm run cli -- setup local --repo demo-project",
+    "demo:docs": "npm run cli -- local --repo demo-project --ref HEAD --out demo-project/docs --store .run-store/demo-project-runs.json",
+    "dev:fixture": "npm run build && node dist/cli/index.js fixture",
+    "dev:local": "npm run build && node dist/cli/index.js local --repo demo-project --out demo-project/docs --store .run-store/demo-project-runs.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "prune:pack": "node -e \"const fs=require('node:fs'); const path=require('node:path'); function walk(dir){ for(const entry of fs.readdirSync(dir,{withFileTypes:true})){ const p=path.join(dir,entry.name); if(entry.isDirectory()) walk(p); else if(entry.name.endsWith('.test.js')) fs.rmSync(p); }} walk('dist');\"",
+    "prepack": "npm run build && npm run prune:pack",
+    "start": "node dist/cli/index.js local --repo demo-project --out demo-project/docs --store .run-store/demo-project-runs.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "commander": "^14.0.3"
+  }
+}

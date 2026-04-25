@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+.run-store/
+.vscode/
+.DS_Store
