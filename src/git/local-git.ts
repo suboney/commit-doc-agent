@@ -10,6 +10,7 @@ const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 type InstallPostCommitHookOptions = {
   command?: string;
   fallbackScriptPath?: string;
+  repoArg?: string;
   ref?: string;
   outDir?: string;
   storePath?: string;
@@ -96,10 +97,11 @@ export async function installPostCommitHook(
   const repoRoot = await resolveGitRepoRoot(repoPath);
   const gitDir = await git(repoRoot, ["rev-parse", "--git-dir"]);
   const hookPath = resolve(repoRoot, gitDir, "hooks", "post-commit");
+  const commandRepoArg = options.repoArg ?? ".";
   const ref = options.ref ?? "HEAD";
   const outDir = options.outDir ?? "docs";
   const storePath = options.storePath ?? ".run-store/runs.json";
-  const adapterArg = options.adapter ? ` --adapter "${options.adapter}"` : "";
+  const adapterArg = options.adapter ? ` --adapter ${shellQuote(options.adapter)}` : "";
   const fallbackCommand = buildHookFallbackCommand(repoRoot, options);
   const hook = [
     "#!/bin/sh",
@@ -118,7 +120,14 @@ export async function installPostCommitHook(
     "  fi",
     `  ${fallbackCommand} "$@"`,
     "}",
-    `run_commit_doc_agent local --repo "." --ref "${ref}" --out "${outDir}" --store "${storePath}"${adapterArg} || true`,
+    [
+      "run_commit_doc_agent local",
+      `--repo ${shellQuote(commandRepoArg)}`,
+      `--ref ${shellQuote(ref)}`,
+      `--out ${shellQuote(outDir)}`,
+      `--store ${shellQuote(storePath)}${adapterArg}`,
+      "|| true"
+    ].join(" "),
     ""
   ].join("\n");
 
@@ -151,11 +160,23 @@ function toHookRelativePath(repoRoot: string, targetPath: string): string {
   const normalizedTargetPath = normalizeHookPath(targetPath);
   const relativePath = relative(normalizedRepoRoot, normalizedTargetPath).replace(/\\/g, "/");
 
+  if (!relativePath) {
+    return ".";
+  }
+
   if (relativePath.startsWith(".") || relativePath.startsWith("/")) {
     return relativePath;
   }
 
   return `./${relativePath}`;
+}
+
+export function toGitRootRelativePath(gitRoot: string, targetPath: string): string {
+  return toHookRelativePath(gitRoot, targetPath);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function normalizeHookPath(path: string): string {

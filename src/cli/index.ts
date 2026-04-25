@@ -89,11 +89,20 @@ program
       adapter: string;
       ollama?: boolean;
       console?: boolean;
-    }) => {
+    }, command: Command) => {
       const event = await createLocalGitCommitEvent(options.repo, options.ref);
       const adapter = resolveAdapterOption(options.adapter, options.ollama);
-      const storePath = options.store ?? defaultStorePathForAdapter(adapter);
-      const publisher = options.console ? new ConsolePublisher() : new ReportPublisher(options.out);
+      const outPath = resolveDefaultProjectPath(
+        options.repo,
+        options.out,
+        command.getOptionValueSource("out") === "default"
+      );
+      const storePath = resolveDefaultProjectPath(
+        options.repo,
+        options.store ?? defaultStorePathForAdapter(adapter),
+        !options.store
+      );
+      const publisher = options.console ? new ConsolePublisher() : new ReportPublisher(outPath);
       const result = await runPipeline(event, {
         diffFetcher: new LocalGitDiffFetcher(options.repo),
         generator: createDocGenerator(options.repo, adapter),
@@ -166,6 +175,7 @@ function printRunResult(status: string, reused: boolean, _id: string): void {
 
 function formatSetupSummary(result: {
   repoRoot: string;
+  gitRoot: string;
   docsDir: string;
   storePath: string;
   hookPath: string;
@@ -173,7 +183,8 @@ function formatSetupSummary(result: {
 }): string {
   const lines = [
     "Local docs setup is ready.",
-    `Repo: ${result.repoRoot}`,
+    `Project folder: ${result.repoRoot}`,
+    `Git root: ${result.gitRoot}`,
     `Docs folder: ${result.docsDir}`,
     `Automatic hook: ${result.hookPath}`,
     `Local run history: ${result.storePath}`
@@ -216,4 +227,12 @@ function resolveAdapterOption(
   }
 
   return adapterOption;
+}
+
+function resolveDefaultProjectPath(repoPath: string, path: string, useProjectRoot: boolean): string {
+  if (!useProjectRoot) {
+    return path;
+  }
+
+  return resolve(repoPath, path);
 }

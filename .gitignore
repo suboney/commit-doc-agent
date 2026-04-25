@@ -4,3 +4,4 @@ dist/
 .run-store/
 .vscode/
 .DS_Store
+docs/.reports/

@@ -1,6 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { installPostCommitHook, resolveGitRepoRoot } from "../git/local-git.js";
+import {
+  installPostCommitHook,
+  resolveGitRepoRoot,
+  toGitRootRelativePath
+} from "../git/local-git.js";
 import { defaultStorePathForAdapter } from "../generation/adapter-defaults.js";
 import { ensureProjectDocSchema } from "../schema/doc-schema.js";
 import type { GeneratorAdapter } from "../generation/create-generator.js";
@@ -10,6 +14,7 @@ const defaultIgnoreEntries = ["docs/.reports/", ".run-store/"];
 
 export type SetupLocalProjectResult = {
   repoRoot: string;
+  gitRoot: string;
   docsDir: string;
   storePath: string;
   hookPath: string;
@@ -25,26 +30,29 @@ export async function setupLocalProject(
   cliScriptPath: string,
   options: SetupLocalProjectOptions = {}
 ): Promise<SetupLocalProjectResult> {
-  const repoRoot = await resolveGitRepoRoot(repoPath);
-  const docsDir = resolve(repoRoot, defaultDocsDir);
+  const projectRoot = await realpath(resolve(repoPath));
+  const gitRoot = await resolveGitRepoRoot(projectRoot);
+  const docsDir = resolve(projectRoot, defaultDocsDir);
   const adapter = options.adapter ?? "auto";
-  const storePath = resolve(repoRoot, defaultStorePathForAdapter(adapter));
+  const storePath = resolve(projectRoot, defaultStorePathForAdapter(adapter));
 
   await mkdir(docsDir, { recursive: true });
   await mkdir(dirname(storePath), { recursive: true });
-  await ensureProjectDocSchema(repoRoot);
+  await ensureProjectDocSchema(projectRoot);
 
-  const addedIgnoreEntries = await ensureGitignoreEntries(repoRoot, defaultIgnoreEntries);
-  const hookPath = await installPostCommitHook(repoRoot, {
+  const addedIgnoreEntries = await ensureGitignoreEntries(projectRoot, defaultIgnoreEntries);
+  const hookPath = await installPostCommitHook(gitRoot, {
     fallbackScriptPath: cliScriptPath,
+    repoArg: toGitRootRelativePath(gitRoot, projectRoot),
     ref: "HEAD",
-    outDir: defaultDocsDir,
-    storePath: defaultStorePathForAdapter(adapter),
+    outDir: toGitRootRelativePath(gitRoot, docsDir),
+    storePath: toGitRootRelativePath(gitRoot, storePath),
     adapter: adapter === "auto" ? undefined : adapter
   });
 
   return {
-    repoRoot,
+    repoRoot: projectRoot,
+    gitRoot,
     docsDir,
     storePath,
     hookPath,

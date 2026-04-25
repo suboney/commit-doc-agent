@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -21,6 +21,7 @@ test("setupLocalProject prepares a repo for automatic local docs", async () => {
     const schema = await readFile(resolve(repoRoot, "docs", ".schema", "feature-page.md"), "utf8");
 
     assert.match(result.repoRoot, /commit-doc-agent-setup-/);
+    assert.equal(result.gitRoot, result.repoRoot);
     assert.equal(result.docsDir, resolve(result.repoRoot, "docs"));
     assert.equal(result.storePath, resolve(result.repoRoot, ".run-store", "runs.json"));
     assert.deepEqual(result.addedIgnoreEntries, ["docs/.reports/", ".run-store/"]);
@@ -32,9 +33,9 @@ test("setupLocalProject prepares a repo for automatic local docs", async () => {
     assert.match(hook, /command -v commit-doc-agent/);
     assert.match(hook, /node "(?:\.\.\/)+tmp\/fake-cli\.js" "\$@"/);
     assert.match(hook, /run_commit_doc_agent local/);
-    assert.match(hook, /--repo "\."/);
-    assert.match(hook, /--out "docs"/);
-    assert.match(hook, /--store ".run-store\/runs\.json"/);
+    assert.match(hook, /--repo '\.'/);
+    assert.match(hook, /--out '\.\/docs'/);
+    assert.match(hook, /--store '\.run-store\/runs\.json'/);
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }
@@ -52,11 +53,41 @@ test("setupLocalProject can prepare an Ollama-based hook", async () => {
     const hook = await readFile(resolve(repoRoot, ".git", "hooks", "post-commit"), "utf8");
 
     assert.equal(result.storePath, resolve(result.repoRoot, ".run-store", "ollama-runs.json"));
-    assert.match(hook, /--store ".run-store\/ollama-runs\.json"/);
-    assert.match(hook, /--adapter "ollama"/);
+    assert.match(hook, /--store '\.run-store\/ollama-runs\.json'/);
+    assert.match(hook, /--adapter 'ollama'/);
     assert.match(hook, /\.\/node_modules\/\.bin\/commit-doc-agent/);
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("setupLocalProject keeps docs in a nested project even when git root is above it", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "commit-doc-agent-monorepo-"));
+  const projectRoot = resolve(workspaceRoot, "apps", "demo-project");
+  const cliPath = resolve(workspaceRoot, "dist", "cli", "index.js");
+
+  try {
+    await execFileAsync("mkdir", ["-p", projectRoot]);
+    await execFileAsync("git", ["init"], { cwd: workspaceRoot });
+
+    const normalizedWorkspaceRoot = await realpath(workspaceRoot);
+    const normalizedProjectRoot = await realpath(projectRoot);
+    const result = await setupLocalProject(projectRoot, cliPath);
+    const projectGitignore = await readFile(resolve(projectRoot, ".gitignore"), "utf8");
+    const schema = await readFile(resolve(projectRoot, "docs", ".schema", "feature-page.md"), "utf8");
+    const hook = await readFile(resolve(workspaceRoot, ".git", "hooks", "post-commit"), "utf8");
+
+    assert.equal(result.repoRoot, normalizedProjectRoot);
+    assert.equal(result.gitRoot, normalizedWorkspaceRoot);
+    assert.equal(result.docsDir, resolve(normalizedProjectRoot, "docs"));
+    assert.equal(result.storePath, resolve(normalizedProjectRoot, ".run-store", "runs.json"));
+    assert.match(projectGitignore, /docs\/\.reports\//);
+    assert.match(schema, /Feature Page Schema/);
+    assert.match(hook, /--repo '\.\/apps\/demo-project'/);
+    assert.match(hook, /--out '\.\/apps\/demo-project\/docs'/);
+    assert.match(hook, /--store '\.\/apps\/demo-project\/\.run-store\/runs\.json'/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 
