@@ -1,6 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
+  DocClassificationInput,
+  DocClassifier,
+  DocDecision,
   DocGenerationInput,
   DocGenerator,
   DocType,
@@ -31,12 +34,58 @@ type ModelGeneratedDoc = {
   docType: DocType;
   summary: string;
   contentMarkdown: string;
+  targetPath?: string;
+};
+
+type ModelDocDecision = {
+  shouldPublish: boolean;
+  docType: DocType | "ignore";
+  confidence: number;
+  reason: string;
+  targetPath?: string;
 };
 
 type ReferenceDocument = {
   path: string;
   content: string;
 };
+
+export class OllamaDocClassifier implements DocClassifier {
+  constructor(
+    private readonly baseUrl = "http://localhost:11434",
+    private readonly model = "llama3.2",
+    private readonly apiKey = "ollama",
+    private readonly repoPath?: string,
+    private readonly timeoutMs = 180_000
+  ) {}
+
+  async classify(input: DocClassificationInput): Promise<DocDecision> {
+    try {
+      const referenceContext = await loadReferenceContext(this.repoPath);
+      const body = await requestChatCompletion({
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+        timeoutMs: this.timeoutMs,
+        requestBody: buildDecisionRequestBody(this.model, input, referenceContext),
+        format: ollamaDecisionSchema
+      });
+
+      return parseDocDecision(body, input.baselineDecision);
+    } catch (error) {
+      if (isFetchFailure(error)) {
+        throw new Error(
+          [
+            `Could not reach Ollama at ${this.baseUrl}.`,
+            "Using the rule-based documentation decision fallback.",
+            originalErrorMessage(error)
+          ].join(" ")
+        );
+      }
+
+      throw error;
+    }
+  }
+}
 
 export class OllamaDocGenerator implements DocGenerator, LlmAdapter {
   constructor(
@@ -79,17 +128,24 @@ export class OllamaDocGenerator implements DocGenerator, LlmAdapter {
   ): Promise<GeneratedDoc> {
     const docSchema = await loadProjectDocSchema(this.repoPath);
     const referenceContext = await loadReferenceContext(this.repoPath);
-    const body = await this.requestChatCompletion(buildChatRequestBody(
-      this.model,
-      input,
-      referenceContext,
-      docSchema,
-      endpoint
-    ));
+    const body = await requestChatCompletion({
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey,
+      timeoutMs: this.timeoutMs,
+      requestBody: buildChatRequestBody(
+        this.model,
+        input,
+        referenceContext,
+        docSchema,
+        endpoint
+      ),
+      format: ollamaOutputSchema
+    });
     const generated = parseGeneratedDoc(body);
 
     return {
       ...generated,
+      targetPath: generated.targetPath ?? (!endpoint ? input.decision.targetPath : undefined),
       source: {
         repo: input.event.repo,
         branch: input.event.branch,
@@ -99,23 +155,6 @@ export class OllamaDocGenerator implements DocGenerator, LlmAdapter {
     };
   }
 
-  private async requestChatCompletion(
-    requestBody: OllamaChatRequestBody
-  ): Promise<OllamaChatResponse> {
-    const url = toNativeChatUrl(this.baseUrl);
-    const headers = {
-      Authorization: `Bearer ${this.apiKey}`,
-      "Content-Type": "application/json"
-    };
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      signal: createTimeoutSignal(this.timeoutMs),
-      body: JSON.stringify(toNativeChatRequestBody(requestBody))
-    });
-
-    return parseChatCompletionResponse(response);
-  }
 }
 
 type OllamaChatRequestBody = {
@@ -131,7 +170,7 @@ type OllamaChatRequestBody = {
 type NativeOllamaChatRequestBody = {
   model: string;
   stream: false;
-  format: typeof ollamaOutputSchema;
+  format: typeof ollamaOutputSchema | typeof ollamaDecisionSchema;
   think: false;
   options: {
     temperature: number;
@@ -139,6 +178,28 @@ type NativeOllamaChatRequestBody = {
   };
   messages: OllamaChatRequestBody["messages"];
 };
+
+async function requestChatCompletion(input: {
+  baseUrl: string;
+  apiKey: string;
+  timeoutMs: number;
+  requestBody: OllamaChatRequestBody;
+  format: NativeOllamaChatRequestBody["format"];
+}): Promise<OllamaChatResponse> {
+  const url = toNativeChatUrl(input.baseUrl);
+  const headers = {
+    Authorization: `Bearer ${input.apiKey}`,
+    "Content-Type": "application/json"
+  };
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    signal: createTimeoutSignal(input.timeoutMs),
+    body: JSON.stringify(toNativeChatRequestBody(input.requestBody, input.format))
+  });
+
+  return parseChatCompletionResponse(response);
+}
 
 function parseGeneratedDoc(response: OllamaChatResponse): ModelGeneratedDoc {
   const text = response.message?.content ?? response.choices?.[0]?.message?.content;
@@ -188,7 +249,38 @@ function normalizeModelGeneratedDoc(value: unknown): ModelGeneratedDoc | undefin
     title,
     docType: isDocType(record.docType) ? record.docType : "change_brief",
     summary,
-    contentMarkdown
+    contentMarkdown,
+    targetPath: firstString(
+      record.targetPath,
+      record.target_path,
+      record.existingDocPath,
+      record.existing_doc_path
+    )
+  };
+}
+
+function parseDocDecision(
+  response: OllamaChatResponse,
+  fallback: DocDecision
+): DocDecision {
+  const text = response.message?.content ?? response.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error("Ollama decision response did not include message content.");
+  }
+
+  const parsed = JSON.parse(extractJson(text)) as unknown;
+
+  if (!isModelDocDecision(parsed)) {
+    throw new Error("Ollama response did not match the documentation decision contract.");
+  }
+
+  return {
+    shouldPublish: parsed.shouldPublish,
+    docType: parsed.docType,
+    confidence: clampConfidence(parsed.confidence),
+    reason: parsed.reason,
+    targetPath: parsed.targetPath ?? fallback.targetPath
   };
 }
 
@@ -221,6 +313,8 @@ function buildChatRequestBody(
           "Getting Started must link to the Reference section with [Reference](#reference).",
           "Reference must document public methods, endpoints, commands, components, configuration, or exported types exposed by the feature when visible in the diff.",
           "If existing docs or hidden report metadata are provided, use them as local reference context and avoid contradicting them without commit evidence.",
+          "If this commit changes an already documented feature, update that documentation instead of creating a duplicate page.",
+          "When updating an existing doc, set targetPath to that existing docs/*.md path.",
           "Markdown must use headings and bullets only.",
           "The response must be exactly one JSON object and no surrounding prose."
         ].join(" ")
@@ -271,6 +365,7 @@ function renderUserPrompt(input: {
     `- Message: ${input.event.message ?? "No commit message provided."}`,
     `- Documentation decision: ${input.decision.docType}`,
     `- Decision reason: ${input.decision.reason}`,
+    `- Existing target doc selected by planner: ${input.decision.targetPath ?? "None."}`,
     "",
     "Changed files:",
     ...input.files.map((file) =>
@@ -288,6 +383,66 @@ function renderUserPrompt(input: {
     "",
     "Return only the output JSON object. Use the exact local commit URL above if you mention the source."
   ].join("\n");
+}
+
+function buildDecisionRequestBody(
+  model: string,
+  input: DocClassificationInput,
+  referenceContext: { docs: ReferenceDocument[]; reports: ReferenceDocument[] }
+): OllamaChatRequestBody {
+  return {
+    model,
+    temperature: 0,
+    maxTokens: 700,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "/no_think",
+          "You are a documentation planning agent for a local git repository.",
+          "Decide whether a commit changes a user-facing feature, API, command, route, configuration contract, operational behavior, or architecture decision that should be documented.",
+          "Skip noisy commits, generated docs, lockfiles, formatting-only changes, package metadata with no user-facing behavior, and internal churn that does not affect how someone uses or maintains a feature.",
+          "If an existing doc already covers the changed feature, choose that doc as targetPath so it can be updated instead of duplicated.",
+          "Return exactly one JSON object matching the response schema.",
+          "Do not include chain-of-thought or prose outside JSON."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: [
+          "Plan documentation for this commit.",
+          "",
+          "Baseline rule decision:",
+          `- shouldPublish: ${input.baselineDecision.shouldPublish}`,
+          `- docType: ${input.baselineDecision.docType}`,
+          `- confidence: ${input.baselineDecision.confidence}`,
+          `- reason: ${input.baselineDecision.reason}`,
+          "",
+          "Commit metadata:",
+          `- Repository: ${input.event.repo}`,
+          `- Branch: ${input.event.branch}`,
+          `- Commit: ${input.event.afterSha}`,
+          `- Message: ${input.event.message ?? "No commit message provided."}`,
+          "",
+          "Changed files:",
+          ...input.files.map((file) =>
+            [
+              `- ${file.path} (${file.status}, +${file.additions}/-${file.deletions})`,
+              truncate(file.patch ?? "No patch available.", 2500)
+            ].join("\n")
+          ),
+          "",
+          "Existing project docs. If one should be updated, return its path as targetPath:",
+          renderReferenceContext(referenceContext.docs),
+          "",
+          "Latest hidden report metadata:",
+          renderReferenceContext(referenceContext.reports),
+          "",
+          "Return fields: shouldPublish, docType, confidence, reason, optional targetPath."
+        ].join("\n")
+      }
+    ]
+  };
 }
 
 function extractJson(value: string): string {
@@ -322,6 +477,22 @@ function isModelGeneratedDoc(value: unknown): value is ModelGeneratedDoc {
   );
 }
 
+function isModelDocDecision(value: unknown): value is ModelDocDecision {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return (
+    typeof record.shouldPublish === "boolean" &&
+    isDecisionDocType(record.docType) &&
+    typeof record.confidence === "number" &&
+    typeof record.reason === "string" &&
+    (record.targetPath === undefined || typeof record.targetPath === "string")
+  );
+}
+
 function isDocType(value: unknown): value is DocType {
   return (
     value === "change_brief" ||
@@ -329,6 +500,10 @@ function isDocType(value: unknown): value is DocType {
     value === "runbook_update" ||
     value === "adr"
   );
+}
+
+function isDecisionDocType(value: unknown): value is DocType | "ignore" {
+  return isDocType(value) || value === "ignore";
 }
 
 function firstString(...values: unknown[]): string | undefined {
@@ -400,12 +575,13 @@ function trimTrailingSlash(value: string): string {
 }
 
 function toNativeChatRequestBody(
-  requestBody: OllamaChatRequestBody
+  requestBody: OllamaChatRequestBody,
+  format: NativeOllamaChatRequestBody["format"]
 ): NativeOllamaChatRequestBody {
   return {
     model: requestBody.model,
     stream: false,
-    format: ollamaOutputSchema,
+    format,
     think: false,
     options: {
       temperature: requestBody.temperature,
@@ -430,10 +606,44 @@ const ollamaOutputSchema = {
     },
     contentMarkdown: {
       type: "string"
+    },
+    targetPath: {
+      type: "string"
     }
   },
   required: ["title", "docType", "summary", "contentMarkdown"]
 } as const;
+
+const ollamaDecisionSchema = {
+  type: "object",
+  properties: {
+    shouldPublish: {
+      type: "boolean"
+    },
+    docType: {
+      type: "string",
+      enum: ["change_brief", "api_note", "runbook_update", "adr", "ignore"]
+    },
+    confidence: {
+      type: "number"
+    },
+    reason: {
+      type: "string"
+    },
+    targetPath: {
+      type: "string"
+    }
+  },
+  required: ["shouldPublish", "docType", "confidence", "reason"]
+} as const;
+
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0.5;
+  }
+
+  return Math.max(0, Math.min(1, value));
+}
 
 function renderReferenceContext(documents: ReferenceDocument[]): string {
   if (documents.length === 0) {

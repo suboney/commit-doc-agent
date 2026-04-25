@@ -6,6 +6,7 @@ import {
   defaultStorePathForAdapter
 } from "../generation/adapter-defaults.js";
 import {
+  createDocClassifier,
   createDocGenerator,
   isGeneratorAdapter,
   type GeneratorAdapter
@@ -105,6 +106,7 @@ program
       const publisher = options.console ? new ConsolePublisher() : new ReportPublisher(outPath);
       const result = await runPipeline(event, {
         diffFetcher: new LocalGitDiffFetcher(options.repo),
+        classifier: createDocClassifier(options.repo, adapter),
         generator: createDocGenerator(options.repo, adapter),
         publisher,
         runStore: new LocalJsonRunStore(storePath)

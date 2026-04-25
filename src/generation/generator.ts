@@ -94,7 +94,8 @@ function buildGeneratedDoc(input: {
       branch: event.branch,
       afterSha: event.afterSha,
       commitUrl: event.commitUrl
-    }
+    },
+    targetPath: endpoint ? undefined : decision.targetPath
   };
 }
 

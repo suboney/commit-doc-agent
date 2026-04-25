@@ -15,6 +15,28 @@ test("generateFeatureDoc creates one feature page per route", () => {
   assert.match(docs[1].contentMarkdown, /### `GET \/health-check`/);
 });
 
+test("generateFeatureDoc preserves a planned target path for fallback updates", () => {
+  const docs = generateFeatureDoc(
+    createEvent(),
+    [
+      {
+        path: "src/service.ts",
+        status: "modified",
+        additions: 3,
+        deletions: 1,
+        patch: "@@ -1,1 +1,1 @@"
+      }
+    ],
+    {
+      ...createDecision(),
+      targetPath: "docs/service-feature.md"
+    },
+    defaultDocSchema
+  );
+
+  assert.equal(docs[0].targetPath, "docs/service-feature.md");
+});
+
 function createEvent(): CommitEvent {
   return {
     provider: "local_git",

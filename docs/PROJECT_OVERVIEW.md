@@ -10,6 +10,11 @@ git commit -> post-commit hook -> commit-doc-agent -> git diff -> doc generator 
 
 The CLI reads a local commit, filters noisy files, classifies whether the change is documentation-worthy, generates feature-page markdown, and writes the result into the target repo's `docs/` folder. Hidden run metadata is written to `docs/.reports/`, and dedupe state is stored in `.run-store/`.
 
+When Ollama is enabled, the model is used twice:
+
+- Planning: decide whether the commit documents a real feature and whether an existing `docs/*.md` page should be updated.
+- Generation: write or revise the feature page using the editable schema and existing docs as context.
+
 ## Main Commands
 
 ```sh
@@ -31,7 +36,7 @@ npm run cli -- local --repo demo-project --ref HEAD --out demo-project/docs
 - `src/core/pipeline.ts`: Orchestrates event intake, filtering, classification, generation, publishing, and run storage.
 - `src/git/local-git.ts`: Reads commit metadata and changed files from a local git repository.
 - `src/analysis/`: Filters noise and classifies documentation impact.
-- `src/generation/`: Chooses template or Ollama-backed document generation.
+- `src/generation/`: Chooses template or Ollama-backed planning and document generation.
 - `src/templates/feature-page.ts`: Deterministic fallback renderer and route detection.
 - `src/schema/doc-schema.ts`: Copies and loads the editable project schema at `docs/.schema/feature-page.md`.
 - `src/llm/ollama-adapter.ts`: Optional local Ollama integration using the native chat API.
@@ -47,7 +52,9 @@ Generated docs are feature pages with:
 - Reference
 - Source Notes
 
-Each target project gets an editable schema at `docs/.schema/feature-page.md`. The generator reads that local schema on every run so users can steer future documentation without changing the CLI package.
+Each target project gets an editable schema at `docs/.schema/feature-page.md`. The generator reads that local schema and existing docs on every run so users can steer future documentation without changing the CLI package.
+
+If the planner selects an existing doc, the publisher writes back to that path instead of creating a duplicate page.
 
 ## Release Notes
 

@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, normalize, resolve, sep } from "node:path";
 import type { DocPublisher, GeneratedDoc, PublishResult } from "../core/types.js";
 
 export class ReportPublisher implements DocPublisher {
@@ -10,7 +10,7 @@ export class ReportPublisher implements DocPublisher {
   async publish(doc: GeneratedDoc): Promise<PublishResult> {
     const docFileName = `${safeFileStem(doc.title, doc.source.afterSha)}.md`;
     const referenceFileName = `${safeName(doc.source.afterSha.slice(0, 12))}-${safeFileStem(doc.title, doc.source.afterSha)}.md`;
-    const docPath = resolve(this.outputDir, docFileName);
+    const docPath = resolveDocPath(this.outputDir, doc.targetPath, docFileName);
     const referenceDir = resolve(this.outputDir, ".reports");
     const referencePath = resolve(referenceDir, referenceFileName);
     const indexPath = resolve(referenceDir, "latest.md");
@@ -61,6 +61,39 @@ function safeFileStem(title: string, fallbackSha: string): string {
   }
 
   return `change-${safeName(fallbackSha.slice(0, 12))}`;
+}
+
+function resolveDocPath(outputDir: string, targetPath: string | undefined, fallbackFileName: string): string {
+  const outputRoot = resolve(outputDir);
+
+  if (!targetPath) {
+    return resolve(outputRoot, fallbackFileName);
+  }
+
+  const normalizedTarget = normalize(targetPath).replace(/\\/g, "/");
+  const relativeTarget = normalizedTarget.startsWith("docs/")
+    ? normalizedTarget.slice("docs/".length)
+    : normalizedTarget;
+
+  if (
+    relativeTarget.startsWith("../") ||
+    relativeTarget === ".." ||
+    relativeTarget.startsWith("/") ||
+    relativeTarget.includes("/.reports/")
+  ) {
+    return resolve(outputRoot, fallbackFileName);
+  }
+
+  const safeTarget = relativeTarget.endsWith(".md")
+    ? relativeTarget
+    : `${relativeTarget.replace(/\/+$/, "") || basename(fallbackFileName)}.md`;
+  const resolved = resolve(outputRoot, safeTarget);
+
+  if (resolved !== outputRoot && !resolved.startsWith(`${outputRoot}${sep}`)) {
+    return resolve(outputRoot, fallbackFileName);
+  }
+
+  return resolved;
 }
 
 function safeName(value: string): string {

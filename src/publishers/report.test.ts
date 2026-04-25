@@ -48,3 +48,33 @@ test("ReportPublisher writes developer docs and hidden report metadata", async (
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("ReportPublisher updates a selected existing docs path", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "commit-doc-agent-target-"));
+  const docsDir = join(rootDir, "docs");
+  const publisher = new ReportPublisher(docsDir);
+
+  try {
+    const result = await publisher.publish({
+      title: "Landing page route",
+      docType: "api_note",
+      summary: "The existing landing page route docs were updated.",
+      contentMarkdown: "# Landing page route\n\n## Purpose\n\nUpdated docs.\n",
+      targetPath: "docs/landing-page-route.md",
+      source: {
+        repo: "demo-project",
+        branch: "main",
+        afterSha: "e124a2aba3db0000000000000000000000000000",
+        commitUrl: "local:/tmp/demo-project@e124a2aba3db0000000000000000000000000000"
+      }
+    });
+
+    const docPath = resolve(docsDir, "landing-page-route.md");
+    const docContent = await readFile(docPath, "utf8");
+
+    assert.equal(result.url, docPath);
+    assert.match(docContent, /Updated docs/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

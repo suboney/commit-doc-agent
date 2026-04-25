@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DocGenerationInput } from "../core/types.js";
-import { OllamaDocGenerator } from "./ollama-adapter.js";
+import type { DocClassificationInput, DocGenerationInput } from "../core/types.js";
+import { OllamaDocClassifier, OllamaDocGenerator } from "./ollama-adapter.js";
 
 test("OllamaDocGenerator uses Ollama native JSON chat endpoint", async () => {
   const calls: Array<Record<string, unknown>> = [];
@@ -20,7 +20,8 @@ test("OllamaDocGenerator uses Ollama native JSON chat endpoint", async () => {
             title: "Generated feature docs",
             docType: "change_brief",
             summary: "A short summary.",
-            contentMarkdown: "# Generated feature docs\n\n## Purpose\n\n- Detail\n"
+            contentMarkdown: "# Generated feature docs\n\n## Purpose\n\n- Detail\n",
+            targetPath: "docs/generated-feature-docs.md"
           })
         }
       }),
@@ -50,6 +51,51 @@ test("OllamaDocGenerator uses Ollama native JSON chat endpoint", async () => {
     assert.match(JSON.stringify(calls[0]), /Feature Page Schema/);
     assert.doesNotMatch(JSON.stringify(calls[0]), /response_format/);
     assert.equal(generated[0].title, "Generated feature docs");
+    assert.equal(generated[0].targetPath, "docs/generated-feature-docs.md");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("OllamaDocClassifier can select an existing doc for update", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(body);
+
+    return new Response(
+      JSON.stringify({
+        message: {
+          content: JSON.stringify({
+            shouldPublish: true,
+            docType: "api_note",
+            confidence: 0.91,
+            reason: "The route contract changed and existing docs should be updated.",
+            targetPath: "docs/landing-page-route.md"
+          })
+        }
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  };
+
+  try {
+    const classifier = new OllamaDocClassifier();
+    const decision = await classifier.classify(createClassificationInput());
+
+    assert.equal(calls.length, 1);
+    assert.equal((calls[0].format as { type: string }).type, "object");
+    assert.match(JSON.stringify(calls[0]), /Plan documentation for this commit/);
+    assert.equal(decision.shouldPublish, true);
+    assert.equal(decision.docType, "api_note");
+    assert.equal(decision.targetPath, "docs/landing-page-route.md");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -183,5 +229,15 @@ function createGenerationInput(): DocGenerationInput {
         patch: "@@ -1,1 +1,1 @@"
       }
     ]
+  };
+}
+
+function createClassificationInput(): DocClassificationInput {
+  const generationInput = createGenerationInput();
+
+  return {
+    event: generationInput.event,
+    files: generationInput.files,
+    baselineDecision: generationInput.decision
   };
 }

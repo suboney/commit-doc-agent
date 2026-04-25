@@ -23,7 +23,14 @@ export async function runPipeline(
 
   const files = await dependencies.diffFetcher.fetch(event);
   const relevantFiles = filterNoise(files);
-  const decision = classifyImpact(relevantFiles);
+  const baselineDecision = classifyImpact(relevantFiles);
+  const decision = dependencies.classifier
+    ? await dependencies.classifier.classify({
+        event,
+        files: relevantFiles,
+        baselineDecision
+      })
+    : baselineDecision;
 
   if (!decision.shouldPublish || decision.docType === "ignore") {
     const record: RunRecord = {

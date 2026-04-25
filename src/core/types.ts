@@ -35,6 +35,7 @@ export type DocDecision = {
   docType: DocType | "ignore";
   confidence: number;
   reason: string;
+  targetPath?: string;
 };
 
 export type GeneratedDoc = {
@@ -42,6 +43,7 @@ export type GeneratedDoc = {
   docType: DocType;
   summary: string;
   contentMarkdown: string;
+  targetPath?: string;
   source: {
     repo: string;
     branch: string;
@@ -96,8 +98,19 @@ export type DocGenerator = {
   generate(input: DocGenerationInput): Promise<GeneratedDoc[]>;
 };
 
+export type DocClassificationInput = {
+  event: CommitEvent;
+  files: ChangedFile[];
+  baselineDecision: DocDecision;
+};
+
+export type DocClassifier = {
+  classify(input: DocClassificationInput): Promise<DocDecision>;
+};
+
 export type PipelineDependencies = {
   diffFetcher: DiffFetcher;
+  classifier?: DocClassifier;
   generator: DocGenerator;
   publisher: DocPublisher;
   runStore: RunStore;
